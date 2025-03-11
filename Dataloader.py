@@ -5,8 +5,11 @@ from torchvision.io import read_image
 
 class FaceDataset(Dataset):
     def __init__(self, base_dir, preload=False):
+
         self.base_dir = base_dir
-        self.preload = preload
+        self.preload = preload 
+        # preload: if True, load all images into memory, dont use it if less memory
+        # could think about putting them in cpu later? 
         self.all_data = []
         
         for md in ['train', 'test', 'validation']:
@@ -44,12 +47,14 @@ class FaceDataLoader(DataLoader):
     def __init__(self, dataset, batch_size, shuffle):
         super().__init__(dataset, batch_size=batch_size, shuffle=shuffle)
         self.dataset = dataset 
-
+    
     def set(self, mode):
+        "switch between train, test, and validation modes"
         self.dataset.set_mode(mode)
 
 if __name__ == "__main__":
-    base_dir = "./data"
+    "Example usage of the FaceDataset and FaceDataLoader"
+    base_dir = "./data" # Change to relative path later
     dataset = FaceDataset(base_dir, preload=False)
     dataLoader = FaceDataLoader(dataset, batch_size=4, shuffle=True)
     dataLoader.set("train")
