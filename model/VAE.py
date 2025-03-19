@@ -24,7 +24,7 @@ class Encoder(nn.Module):
         self.fc_mean = nn.Linear(64 * 25 * 25, latent_dim)
         self.fc_logvar = nn.Linear(64 * 25 * 25, latent_dim)
         
-    def process(self, x):
+    def forward(self, x):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.activation(x)
@@ -45,17 +45,36 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, latent_dim=LATENT_DIM):
         super(Decoder, self).__init__()
-        self.fc1 = nn.Linear(latent_dim, 512)
-        self.fc2 = nn.Linear(512, IMG_HEIGHT * IMG_WIDTH * IMG_CHANNELS)
+        self.fc = nn.Linear(latent_dim, 64 * 25 * 25)
+        
+        self.deconv1 = nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        
+        self.deconv2 = nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.bn2 = nn.BatchNorm2d(16)
+        
+        self.deconv3 = nn.Conv2d(16, IMG_CHANNELS, kernel_size=3, padding=1)
+
         self.activation = nn.SiLU()
         self.out_activation = nn.Sigmoid() 
         
-    def process(self, z):
-        x = self.fc1(z)
+    def forward(self, z):
+        x = self.fc(z)
         x = self.activation(x)
-        x = self.fc2(x)
+        
+        x = x.view(-1, 64, 25, 25)
+        
+        x = self.deconv1(x)
+        x = self.bn1(x)
+        x = self.activation(x)
+        
+        x = self.deconv2(x)
+        x = self.bn2(x)
+        x = self.activation(x)
+        
+        x = self.deconv3(x)
         x = self.out_activation(x)
-        x = x.view(-1, IMG_CHANNELS, IMG_HEIGHT, IMG_WIDTH)
+
         return x
 
 class VAE(nn.Module):
@@ -63,35 +82,76 @@ class VAE(nn.Module):
         super(VAE, self).__init__()
         self.encoder = Encoder(latent_dim)
         self.decoder = Decoder(latent_dim)
+        self.classifier = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.SiLU(),
+            nn.Linear(128, 64),
+            nn.SiLU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid()  
+        )
+
         
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
         
-    def process(self, x):
+    def forward(self, x):
         mu, logvar = self.encoder(x)
         z = self.reparameterize(mu, logvar)
         reconstruction = self.decoder(z)
-        return reconstruction, mu, logvar
+        fake_prob = self.classifier(z)
+        return reconstruction, mu, logvar, fake_prob
 
-def vae_loss(recon_x, x, mu, logvar):
+def vae_loss(recon_x, x, mu, logvar, fake_prob, gt_f_t):
     # Flatten the images
     x = x.view(x.size(0), -1)
     recon_x = recon_x.view(recon_x.size(0), -1)
     # Reconstruction loss: binary cross entropy
-    BCE = F.binary_cross_entropy(recon_x, x, reduction='sum')
+    BCE = F.binary_cross_entropy(recon_x, x, reduction='mean')
     # KL divergence
-    KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-    return BCE + KLD
+    KLD = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+    # Classification loss
+    cls_loss = F.binary_cross_entropy(fake_prob, gt_f_t, reduction='mean')
+
+    Total_loss = BCE + KLD + cls_loss
+    return Total_loss
 
 # Example usage:
 if __name__ == "__main__":
-    batch_size = 4
-    dummy_input = torch.rand(batch_size, IMG_CHANNELS, IMG_HEIGHT, IMG_WIDTH)
-    
+    base_dir = "./data"
+    batch_size = 64
+    dataset = FaceDataset(base_dir, preload=False)
+    dataLoader = FaceDataLoader(dataset, batch_size=batch_size, shuffle=True)
     model = VAE(LATENT_DIM)
-    reconstruction, mu, logvar = model(dummy_input)
-    
-    loss = vae_loss(reconstruction, dummy_input, mu, logvar)
-    print("Loss:", loss.item())
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    dataLoader.set("train")
+
+    num_epochs = 25 
+
+    for epoch in range(num_epochs):
+        total_loss = 0
+        num_batches = 0
+        
+        for batch in dataLoader:
+            optimizer.zero_grad()
+            
+            img = batch['image']
+            gt_f_t = batch['label']
+            reconstruction, mu, logvar, fake_prob = model(img)
+            
+            loss = vae_loss(reconstruction, img, mu, logvar, fake_prob, gt_f_t)
+            
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            num_batches += 1
+        
+        avg_loss = total_loss / num_batches
+        print(f"Epoch {epoch+1}/{num_epochs}, Average Loss: {avg_loss:.4f}")
+
+    # save model later uncomment this when training
+    # torch.save(model.state_dict(), "VAE_model.pth")
