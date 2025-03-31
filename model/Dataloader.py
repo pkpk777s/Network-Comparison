@@ -20,8 +20,8 @@ class FaceDataset(Dataset):
                            if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
             for filename in image_files:
                 full_path = os.path.join(img_dir, filename)
-                # 'F_' images are Fake (False), 'R_' images are Real (True)
-                label = False if filename.startswith('F_') else True
+                # 'F_' images are Fake (True), 'R_' images are Real (False)
+                label = True if filename.startswith('F_') else False
                 if preload:
                     image = read_image(full_path)
                     self.all_data.append({'image': image, 'label': label, 'path': full_path, 'mode': md})
@@ -38,24 +38,27 @@ class FaceDataset(Dataset):
     def __getitem__(self, idx):
         entry = self.data[idx]
         if 'image' in entry:
+            entry['image'] = entry['image'].float()
             return entry
-        image = read_image(entry['path'])
+        image = read_image(entry['path']).float()
         entry['image'] = image
         return entry
 
 class FaceDataLoader(DataLoader):
     def __init__(self, dataset, batch_size, shuffle):
         super().__init__(dataset, batch_size=batch_size, shuffle=shuffle)
-        self.dataset = dataset 
+        self._face_dataset = dataset
     
     def set(self, mode):
         "switch between train, test, and validation modes"
-        self.dataset.set_mode(mode)
+        self._face_dataset.set_mode(mode)
 
 if __name__ == "__main__":
     "Example usage of the FaceDataset and FaceDataLoader"
-    base_dir = "./data" # Change to relative path later
+    base_dir = "../data" # Change to relative path later
     dataset = FaceDataset(base_dir, preload=False)
+    print(len(dataset))
+
     dataLoader = FaceDataLoader(dataset, batch_size=4, shuffle=True)
     dataLoader.set("train")
     print("Training Data:")
