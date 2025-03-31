@@ -6,95 +6,12 @@ import torch.nn as nn
 import torch.optim as optim
 from torchvision import models
 
+# Import the custom dataloader and dataset implementation from Dataloader.py
+from Dataloader import FaceDataset, FaceDataLoader
+
 # Check for GPU availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
-
-############################################
-# Custom dataset and dataloader definitions
-############################################
-
-class FaceDataset(torch.utils.data.Dataset):
-    """
-    A custom dataset that reads images from directories:
-      data/train, data/test, data/validation.
-    Image filenames should begin with:
-      'R_' for real (label 1) and 'F_' for fake (label 0).
-    If preload is False, images are loaded on-demand.
-    """
-    def __init__(self, base_dir, preload=False):
-        self.base_dir = base_dir
-        self.preload = preload
-        self.data = []
-        
-        modes = ["train", "test", "validation"]
-        for mode in modes:
-            mode_dir = os.path.join(base_dir, mode)
-            if not os.path.isdir(mode_dir):
-                continue
-            for fname in os.listdir(mode_dir):
-                if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    full_path = os.path.join(mode_dir, fname)
-                    # Label is 1 (real) if filename does not start with 'F_', else 0 (fake)
-                    label = 0 if fname.startswith("F_") else 1
-                    if preload:
-                        image = self.read_image(full_path)
-                        self.data.append({"image": image, "label": label, "mode": mode})
-                    else:
-                        self.data.append({"path": full_path, "label": label, "mode": mode})
-        # By default, set to train mode
-        self.set_mode("train")
-    
-    def set_mode(self, mode):
-        """Filter the dataset samples to a specific mode."""
-        self.samples = [sample for sample in self.data if sample["mode"] == mode]
-    
-    def __len__(self):
-        return len(self.samples)
-    
-    def read_image(self, path):
-        """Load an image from disk and convert to a tensor (C,H,W) with uint8 values."""
-        with Image.open(path) as img:
-            # Ensure image is RGB
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            img_array = np.array(img)
-            # Change shape from (H,W,C) to (C,H,W)
-            tensor = torch.from_numpy(img_array).permute(2, 0, 1)
-            return tensor
-    
-    def __getitem__(self, idx):
-        sample = self.samples[idx]
-        if "image" not in sample:
-            sample["image"] = self.read_image(sample["path"])
-        return sample
-
-class FaceDataLoader:
-    """
-    A simple wrapper around torch.utils.data.DataLoader that allows switching modes.
-    """
-    def __init__(self, dataset, batch_size, shuffle):
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self._create_loader()
-    
-    def _create_loader(self):
-        self.loader = torch.utils.data.DataLoader(
-            self.dataset,
-            batch_size=self.batch_size,
-            shuffle=self.shuffle
-        )
-    
-    def set(self, mode):
-        self.dataset.set_mode(mode)
-        self._create_loader()
-    
-    def __iter__(self):
-        return iter(self.loader)
-    
-    def __len__(self):
-        return len(self.loader)
 
 ############################################
 # Custom image transformations (no torchvision.transforms)
