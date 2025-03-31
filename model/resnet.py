@@ -7,7 +7,7 @@ import torch.optim as optim
 from torchvision import models
 
 # Import the custom dataloader and dataset implementation from Dataloader.py
-from Dataloader import FaceDataset, FaceDataLoader
+from model.Dataloader import FaceDataset, FaceDataLoader
 
 # Check for GPU availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
