@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from Dataloader import FaceDataLoader, FaceDataset
+from torch.nn.init import xavier_uniform_
 
 class Encoder(nn.Module):
     def __init__(self, latent_dim=64, IMG_CHANNELS=3):
@@ -55,6 +56,14 @@ class Decoder(nn.Module):
 
         self.activation = nn.SiLU()
         self.out_activation = nn.Sigmoid() 
+        self.init_weights()
+
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
         
     def forward(self, z):
         x = self.fc(z)
@@ -86,6 +95,14 @@ class VAE(nn.Module):
             nn.Linear(64, 1),
             nn.Sigmoid()  
         )
+        self.init_weights()
+        
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -111,6 +128,7 @@ def vae_loss(recon_x, x, mu, logvar, fake_prob, gt_f_t):
     cls_loss = F.binary_cross_entropy(fake_prob, gt_f_t.unsqueeze(1).float(), reduction='mean')
     
     Total_loss = BCE + KLD + cls_loss
+    # Total_loss = cls_loss
     return Total_loss
 
 def evaluate_model(model, dataloader):
@@ -132,13 +150,20 @@ def evaluate_model(model, dataloader):
 # Example usage:
 if __name__ == "__main__":
     LATENT_DIM = 64
-    base_dir = "../data"
+    base_dir = "./data"
     batch_size = 64
     dataset = FaceDataset(base_dir, preload=False)
     dataLoader = FaceDataLoader(dataset, batch_size=batch_size, shuffle=True)
     model = VAE(LATENT_DIM)
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4) 
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5) 
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='min', 
+        factor=0.5,  # Reduce LR by half when triggered
+        patience=2,  # Wait for 2 epochs without improvement before reducing
+        verbose=True
+    )
     dataLoader.set("train")
     
     num_epochs = 25 
