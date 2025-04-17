@@ -1,4 +1,5 @@
 import os
+import argparse
 import numpy as np
 from PIL import Image
 import torch
@@ -7,11 +8,7 @@ import torch.optim as optim
 from torchvision import models
 
 # Import the custom dataloader and dataset implementation from Dataloader.py
-from model.Dataloader import FaceDataset, FaceDataLoader
-
-# Check for GPU availability
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+from Dataloader import FaceDataset, FaceDataLoader
 
 ############################################
 # Custom image transformations (no torchvision.transforms)
@@ -74,28 +71,28 @@ transform_fn = TransformCompose([
     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-# Load the dataset
-data_dir = "./data"  # Update this path as needed
-dataset = FaceDataset(data_dir, preload=False)
+def get_device(verbose=True):
+    """
+    Returns CUDA device if available, otherwise CPU.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if verbose:
+        print(f"Using device: {device}")
+    return device
 
-# Create a DataLoader using the custom FaceDataLoader
-batch_size = 4
-train_loader = FaceDataLoader(dataset, batch_size=batch_size, shuffle=True)
+def build_model(device):
+    """
+    Loads a pretrained ResNet18 and adapts it for binary classification.
+    """
+    model = models.resnet18(pretrained=True)
+    num_features = model.fc.in_features
+    model.fc = nn.Linear(num_features, 2)  # Binary classifier
+    return model.to(device)
 
-# Prepare the ResNet18 model - adjust the final fully connected layer for binary classification
-model = models.resnet18(pretrained=True)
-num_features = model.fc.in_features
-model.fc = nn.Linear(num_features, 2)  # two output classes for binary classification
-model = model.to(device)
-
-# Define loss function and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-# Define training parameters
-num_epochs = 2  # Increase number of epochs as needed
-
-def train():
+def train(model, train_loader, criterion, optimizer, device, num_epochs, transform_fn):
+    """
+    Main training loop.
+    """
     print("Starting Training...")
     for epoch in range(num_epochs):
         # Switch to training mode
@@ -108,11 +105,8 @@ def train():
         for batch in train_loader:
             # Now batch is a dictionary with keys 'image', 'label', etc.
             # Apply our transform_fn to each image in the batch
-            images = torch.stack([transform_fn(img) for img in batch["image"]])
-            labels = torch.tensor([int(lbl) for lbl in batch["label"]])
-            
-            images = images.to(device)
-            labels = labels.to(device)
+            images = torch.stack([transform_fn(img) for img in batch["image"]]).to(device)
+            labels = torch.tensor([int(lbl) for lbl in batch["label"]], device=device)
             
             optimizer.zero_grad()
             outputs = model(images)
@@ -131,7 +125,11 @@ def train():
     
     print("Training complete.")
 
-def evaluate(mode="test"):
+@torch.no_grad()
+def evaluate(model, dataset, mode, batch_size, device, transform_fn):
+    """
+    Evaluate the model on `mode` subset (either 'test' or 'validation').
+    """
     # Evaluate model on the specified dataset mode: "test" or "validation"
     eval_loader = FaceDataLoader(dataset, batch_size=batch_size, shuffle=False)
     eval_loader.set(mode)
@@ -139,18 +137,14 @@ def evaluate(mode="test"):
     total_samples = 0
     correct_preds = 0
     
-    with torch.no_grad():
-        for batch in eval_loader:
-            images = torch.stack([transform_fn(img) for img in batch["image"]])
-            labels = torch.tensor([int(lbl) for lbl in batch["label"]])
-            
-            images = images.to(device)
-            labels = labels.to(device)
-            
-            outputs = model(images)
-            _, preds = torch.max(outputs, 1)
-            correct_preds += (preds == labels).sum().item()
-            total_samples += labels.size(0)
+    for batch in eval_loader:
+        images = torch.stack([transform_fn(img) for img in batch["image"]]).to(device)
+        labels = torch.tensor([int(lbl) for lbl in batch["label"]], device=device)
+        
+        outputs = model(images)
+        _, preds = torch.max(outputs, 1)
+        correct_preds += (preds == labels).sum().item()
+        total_samples += labels.size(0)
     
     if total_samples > 0:
         acc = correct_preds / total_samples * 100
@@ -158,9 +152,47 @@ def evaluate(mode="test"):
     else:
         print(f"No {mode} data available for evaluation.")
 
+def parse_args():
+    """
+    Parse command line arguments.
+    """
+    parser = argparse.ArgumentParser(description="Train ResNet18 on face dataset.")
+    parser.add_argument("--data-dir", type=str, default="./data",
+                        help="Root directory containing train/test/validation folders.")
+    parser.add_argument("--epochs", type=int, default=2, 
+                        help="Number of training epochs.")
+    parser.add_argument("--batch-size", type=int, default=4, 
+                        help="Mini-batch size.")
+    parser.add_argument("--lr", type=float, default=0.001, 
+                        help="Learning rate.")
+    return parser.parse_args()
+
 if __name__ == "__main__":
-    train()
+    # Parse command line arguments
+    args = parse_args()
+    
+    # Set up device
+    device = get_device()
+    
+    # Load the dataset
+    dataset = FaceDataset(args.data_dir, preload=False)
+    
+    # Create a DataLoader using the custom FaceDataLoader
+    train_loader = FaceDataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+    
+    # Build the model
+    model = build_model(device)
+    
+    # Define loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    
+    # Train the model
+    train(model, train_loader, criterion, optimizer, device, 
+          num_epochs=args.epochs, transform_fn=transform_fn)
+    
     # Evaluate on test set
-    evaluate("test")
+    evaluate(model, dataset, "test", args.batch_size, device, transform_fn)
+    
     # Evaluate on validation set
-    evaluate("validation")
+    evaluate(model, dataset, "validation", args.batch_size, device, transform_fn)
