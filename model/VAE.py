@@ -2,6 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from Dataloader import FaceDataLoader, FaceDataset
+from torch.nn.init import xavier_uniform_
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+from tqdm import tqdm
 
 class Encoder(nn.Module):
     def __init__(self, latent_dim=64, IMG_CHANNELS=3):
@@ -55,6 +60,14 @@ class Decoder(nn.Module):
 
         self.activation = nn.SiLU()
         self.out_activation = nn.Sigmoid() 
+        self.init_weights()
+
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
         
     def forward(self, z):
         x = self.fc(z)
@@ -86,6 +99,14 @@ class VAE(nn.Module):
             nn.Linear(64, 1),
             nn.Sigmoid()  
         )
+        self.init_weights()
+        
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -111,6 +132,7 @@ def vae_loss(recon_x, x, mu, logvar, fake_prob, gt_f_t):
     cls_loss = F.binary_cross_entropy(fake_prob, gt_f_t.unsqueeze(1).float(), reduction='mean')
     
     Total_loss = BCE + KLD + cls_loss
+    # Total_loss = cls_loss
     return Total_loss
 
 def evaluate_model(model, dataloader):
@@ -132,23 +154,40 @@ def evaluate_model(model, dataloader):
 # Example usage:
 if __name__ == "__main__":
     LATENT_DIM = 64
-    base_dir = "../data"
+    base_dir = "./data"
     batch_size = 64
     dataset = FaceDataset(base_dir, preload=False)
     dataLoader = FaceDataLoader(dataset, batch_size=batch_size, shuffle=True)
     model = VAE(LATENT_DIM)
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4) 
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5) 
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='min', 
+        factor=0.5,  # Reduce LR by half when triggered
+        patience=2,  # Wait for 2 epochs without improvement before reducing
+        verbose=True
+    )
     dataLoader.set("train")
     
-    num_epochs = 25 
+    num_epochs = 64 
 
+    save_dir = "../VAE_result"
+    os.makedirs(save_dir, exist_ok=True)
+    
+    train_losses = []
+    val_losses = []
+    
     # Training loop
     for epoch in range(num_epochs):
+        model.train()
         total_loss = 0.0
         num_batches = 0
         
-        for batch in dataLoader:
+        # Create progress bar for this epoch
+        pbar = tqdm(dataLoader, desc=f"Epoch {epoch+1}/{num_epochs}")
+        
+        for batch in pbar:
             optimizer.zero_grad()
             
             img = batch['image'].float() / 255.0
@@ -160,21 +199,68 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
             
-            total_loss += loss.item()
+            current_loss = loss.item()
+            total_loss += current_loss
             num_batches += 1
-            print(f"Batch Loss: {loss.item():.4f}")
+            
+            # Update progress bar with current batch loss
+            pbar.set_postfix({"Loss": f"{current_loss:.4f}"})
         
-        avg_loss = total_loss / num_batches if num_batches > 0 else 0
-        print(f"Epoch {epoch+1}/{num_epochs}, Average Training Loss: {avg_loss:.4f}")
+        avg_train_loss = total_loss / num_batches if num_batches > 0 else 0
+        train_losses.append(avg_train_loss)
+        
+        # Evaluate on validation set at the end of each epoch
+        dataLoader.set("validation")
+        val_loss = evaluate_model(model, dataLoader)
+        val_losses.append(val_loss)
+        
+        print(f"Epoch {epoch+1}/{num_epochs}, Training Loss: {avg_train_loss:.4f}, Validation Loss: {val_loss:.4f}")
+        
+        # Update learning rate scheduler
+        scheduler.step(val_loss)
+        
+        # Set back to training mode and data
+        dataLoader.set("train")
     
-    # Evaluate on Test set
+    # Evaluate on Test set after training
     dataLoader.set("test")
     test_loss = evaluate_model(model, dataLoader)
-    print(f"Test Loss: {test_loss:.4f}")
+    print(f"Final Test Loss: {test_loss:.4f}")
     
-    # Evaluate on Validation set
-    dataLoader.set("validation")
-    val_loss = evaluate_model(model, dataLoader)
-    print(f"Validation Loss: {val_loss:.4f}")
+    # Plot training and validation loss
+    plt.figure(figsize=(10, 6))
+    epochs = range(1, num_epochs + 1)
+    plt.plot(epochs, train_losses, 'b', label='Training Loss')
+    plt.plot(epochs, val_losses, 'r', label='Validation Loss')
+    plt.title('Training and Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True)
     
-    torch.save(model.state_dict(), "VAE_model.pth")
+    # Add markers for min values
+    min_train_epoch = np.argmin(train_losses) + 1
+    min_val_epoch = np.argmin(val_losses) + 1
+    min_train_loss = min(train_losses)
+    min_val_loss = min(val_losses)
+    
+    plt.annotate(f'Min: {min_train_loss:.4f}', 
+                xy=(min_train_epoch, min_train_loss), 
+                xytext=(min_train_epoch+1, min_train_loss+0.5),
+                arrowprops=dict(facecolor='black', shrink=0.05))
+    
+    plt.annotate(f'Min: {min_val_loss:.4f}', 
+                xy=(min_val_epoch, min_val_loss), 
+                xytext=(min_val_epoch+1, min_val_loss+0.5),
+                arrowprops=dict(facecolor='black', shrink=0.05))
+    
+    # Save the figure
+    loss_plot_path = os.path.join(save_dir, 'vae_loss_plot.png')
+    plt.savefig(loss_plot_path)
+    print(f"Loss plot saved to {loss_plot_path}")
+    
+    # Save model
+    model_path = os.path.join(save_dir, 'VAE_model.pth')
+    torch.save(model.state_dict(), model_path)
+    print(f"Model saved to {model_path}")
+    
