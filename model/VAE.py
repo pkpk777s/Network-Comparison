@@ -155,7 +155,7 @@ def evaluate_model(model, dataloader):
 if __name__ == "__main__":
     LATENT_DIM = 64
     base_dir = "./data"
-    batch_size = 64
+    batch_size = 16
     dataset = FaceDataset(base_dir, preload=False)
     dataLoader = FaceDataLoader(dataset, batch_size=batch_size, shuffle=True)
     model = VAE(LATENT_DIM)
