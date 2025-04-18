@@ -6,6 +6,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import models
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
 
 # Import the custom dataloader and dataset implementation from Dataloader.py
 from Dataloader import FaceDataset, FaceDataLoader
@@ -38,11 +41,11 @@ class Normalize(nn.Module):
     """
     def __init__(self, mean, std):
         super().__init__()
-        self.mean = torch.tensor(mean).view(-1, 1, 1)
-        self.std = torch.tensor(std).view(-1, 1, 1)
+        self.register_buffer("mean", torch.tensor(mean).view(-1, 1, 1))
+        self.register_buffer("std", torch.tensor(std).view(-1, 1, 1))
         
     def forward(self, x):
-        return (x - self.mean.to(x.device)) / self.std.to(x.device)
+        return (x - self.mean) / self.std
 
 class ToFloatAndScale(nn.Module):
     """
@@ -89,10 +92,69 @@ def build_model(device):
     model.fc = nn.Linear(num_features, 2)  # Binary classifier
     return model.to(device)
 
+############################################################
+# Visualisation helpers
+############################################################
+def plot_training_curves(losses, accs, out_dir):
+    """
+    Plot and save training loss and accuracy curves.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    plt.figure(figsize=(10, 4))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(range(1, len(losses) + 1), losses, marker='o')
+    plt.title("Training Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+
+    plt.subplot(1, 2, 2)
+    plt.plot(range(1, len(accs) + 1), accs, marker='o', color='green')
+    plt.title("Training Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy (%)")
+    plt.ylim(0, 100)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "training_curves.png"))
+    plt.close()
+
+
+def plot_confusion_matrix(y_true, y_pred, mode, out_dir):
+    """
+    Create and save a confusion matrix visualization.
+    """
+    if not y_true:
+        return
+    os.makedirs(out_dir, exist_ok=True)
+    cm = confusion_matrix(y_true, y_pred)
+    labels = ["Real", "Fake"]
+    sns.set(style="white")
+    plt.figure(figsize=(4, 3))
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        cbar=False,
+        xticklabels=labels,
+        yticklabels=labels,
+    )
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.title(f"Confusion Matrix ({mode})")
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, f"confusion_matrix_{mode}.png"))
+    plt.close()
+
 def train(model, train_loader, criterion, optimizer, device, num_epochs, transform_fn):
     """
-    Main training loop.
+    Main training loop. Returns training losses and accuracies for visualization.
     """
+    losses, accs = [], []
+    best_acc = 0.0
+    best_state = None
+    
     print("Starting Training...")
     for epoch in range(num_epochs):
         # Switch to training mode
@@ -121,14 +183,24 @@ def train(model, train_loader, criterion, optimizer, device, num_epochs, transfo
         
         epoch_loss = running_loss / total_samples
         epoch_acc = correct_preds / total_samples * 100
+        losses.append(epoch_loss)
+        accs.append(epoch_acc)
+        
+        # Track best model
+        if epoch_acc > best_acc:
+            best_acc = epoch_acc
+            best_state = model.state_dict()
+            
         print(f"Epoch {epoch+1}/{num_epochs} - Loss: {epoch_loss:.4f} - Accuracy: {epoch_acc:.2f}%")
     
-    print("Training complete.")
+    print(f"Training complete. Best Acc: {best_acc:.2f}%")
+    return losses, accs, best_state
 
 @torch.no_grad()
 def evaluate(model, dataset, mode, batch_size, device, transform_fn):
     """
     Evaluate the model on `mode` subset (either 'test' or 'validation').
+    Returns true labels and predictions for confusion matrix visualization.
     """
     # Evaluate model on the specified dataset mode: "test" or "validation"
     eval_loader = FaceDataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -137,12 +209,18 @@ def evaluate(model, dataset, mode, batch_size, device, transform_fn):
     total_samples = 0
     correct_preds = 0
     
+    y_true, y_pred = [], []
+    
     for batch in eval_loader:
         images = torch.stack([transform_fn(img) for img in batch["image"]]).to(device)
         labels = torch.tensor([int(lbl) for lbl in batch["label"]], device=device)
         
         outputs = model(images)
         _, preds = torch.max(outputs, 1)
+        
+        y_true.extend(labels.cpu().tolist())
+        y_pred.extend(preds.cpu().tolist())
+        
         correct_preds += (preds == labels).sum().item()
         total_samples += labels.size(0)
     
@@ -151,25 +229,31 @@ def evaluate(model, dataset, mode, batch_size, device, transform_fn):
         print(f"{mode.capitalize()} Accuracy: {acc:.2f}%")
     else:
         print(f"No {mode} data available for evaluation.")
+        
+    return y_true, y_pred
 
 def parse_args():
     """
     Parse command line arguments.
     """
-    parser = argparse.ArgumentParser(description="Train ResNet18 on face dataset.")
+    parser = argparse.ArgumentParser(description="Train ResNet18 on face dataset with visualizations.")
     parser.add_argument("--data-dir", type=str, default="./data",
                         help="Root directory containing train/test/validation folders.")
-    parser.add_argument("--epochs", type=int, default=2, 
+    parser.add_argument("--epochs", type=int, default=200, 
                         help="Number of training epochs.")
     parser.add_argument("--batch-size", type=int, default=4, 
                         help="Mini-batch size.")
     parser.add_argument("--lr", type=float, default=0.001, 
                         help="Learning rate.")
+    parser.add_argument("--out-dir", type=str, default="resnet-result",
+                        help="Directory to save figures & weights.")
     return parser.parse_args()
 
 if __name__ == "__main__":
     # Parse command line arguments
     args = parse_args()
+    out_dir = args.out_dir
+    os.makedirs(out_dir, exist_ok=True)
     
     # Set up device
     device = get_device()
@@ -187,12 +271,22 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
-    # Train the model
-    train(model, train_loader, criterion, optimizer, device, 
-          num_epochs=args.epochs, transform_fn=transform_fn)
+    # Train the model and get metrics for visualization
+    train_losses, train_accs, best_state = train(model, train_loader, criterion, optimizer, device, 
+                                    num_epochs=args.epochs, transform_fn=transform_fn)
     
-    # Evaluate on test set
-    evaluate(model, dataset, "test", args.batch_size, device, transform_fn)
+    # Plot training curves
+    plot_training_curves(train_losses, train_accs, out_dir)
     
-    # Evaluate on validation set
-    evaluate(model, dataset, "validation", args.batch_size, device, transform_fn)
+    # Evaluate on test set and visualize confusion matrix
+    y_true_test, y_pred_test = evaluate(model, dataset, "test", args.batch_size, device, transform_fn)
+    plot_confusion_matrix(y_true_test, y_pred_test, "test", out_dir)
+    
+    # Evaluate on validation set and visualize confusion matrix
+    y_true_val, y_pred_val = evaluate(model, dataset, "validation", args.batch_size, device, transform_fn)
+    plot_confusion_matrix(y_true_val, y_pred_val, "validation", out_dir)
+    
+    # Save model weights
+    weight_path = os.path.join(out_dir, "resnet18_face.pth")
+    torch.save(best_state if best_state is not None else model.state_dict(), weight_path)
+    print(f"Model weights saved to {weight_path}")
