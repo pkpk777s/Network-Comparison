@@ -46,6 +46,7 @@ class Normalize(nn.Module):
         
     def forward(self, x):
         return (x - self.mean) / self.std
+        return (x - self.mean) / self.std
 
 class ToFloatAndScale(nn.Module):
     """
@@ -83,13 +84,30 @@ def get_device(verbose=True):
         print(f"Using device: {device}")
     return device
 
+def init_weights(m):
+    """
+    Initialize model weights for training from scratch.
+    """
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+    elif isinstance(m, nn.BatchNorm2d):
+        nn.init.constant_(m.weight, 1)
+        nn.init.constant_(m.bias, 0)
+
 def build_model(device):
     """
-    Loads a pretrained ResNet18 and adapts it for binary classification.
+    Loads a ResNet18 from scratch (without pretrained weights) and adapts it for binary classification.
     """
-    model = models.resnet18(pretrained=True)
+    model = models.resnet18(pretrained=False)  # Initialize without pretrained weights
     num_features = model.fc.in_features
     model.fc = nn.Linear(num_features, 2)  # Binary classifier
+    
+    # Initialize weights for training from scratch
+    model.apply(init_weights)
+    
+    print("Initialized ResNet18 model from scratch for training")
     return model.to(device)
 
 ############################################################

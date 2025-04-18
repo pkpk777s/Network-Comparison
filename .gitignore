@@ -1,1 +1,5 @@
-.qodo
+data/
+model/__pycache__/
+data_zip/
+ResNet_results/
+VAE_results/
