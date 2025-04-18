@@ -44,4 +44,3 @@ class Preprocessor:
             'high_frequency': high_freq,
             'low_frequency': low_freq
         }
-
